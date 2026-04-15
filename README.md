@@ -57,6 +57,38 @@ Download corresponding [LLaVA](https://github.com/haotian-liu/LLaVA/blob/main/do
 
 Download each dataset according to [EVAL.md](EVAL.md).
 
+## 🚀 Qwen2.5-VL + GQA (Fork Extension)
+
+This fork adds a runnable Qwen path for GQA evaluation:
+- `scripts/qwen/run_gqa_qwen.py` (supports `vanilla` and `visiontrim`)
+- `scripts/v1_qwen/eval/gqa_qwen25vl_3b.sh` (one-command entrypoint)
+- `scripts/qwen/download_gqa_testdev_subset.sh` (download + build 10k subset)
+
+### Quick Run
+
+```bash
+conda create -n visiontrim-qwen25vl python=3.10 -y
+conda activate visiontrim-qwen25vl
+pip install torch torchvision transformers accelerate qwen-vl-utils pillow tqdm protobuf
+
+# download testdev and build 10k subset
+bash scripts/qwen/download_gqa_testdev_subset.sh
+
+# run visiontrim
+METHOD=visiontrim \
+QUESTION_FILE=./playground/data/eval/gqa/subset_10000/llava_gqa_testdev_balanced_10000.jsonl \
+IMAGE_FOLDER=./playground/data/eval/gqa/subset_10000/images \
+bash scripts/v1_qwen/eval/gqa_qwen25vl_3b.sh
+
+# run vanilla baseline
+METHOD=vanilla \
+QUESTION_FILE=./playground/data/eval/gqa/subset_10000/llava_gqa_testdev_balanced_10000.jsonl \
+IMAGE_FOLDER=./playground/data/eval/gqa/subset_10000/images \
+bash scripts/v1_qwen/eval/gqa_qwen25vl_3b.sh
+```
+
+Detailed instructions: [docs/qwen25vl_gqa_quickstart.md](docs/qwen25vl_gqa_quickstart.md).
+
 ## 🔬 Analysis
 
 To analyze the inaccurate text-visual attention in VLMs, you need to download the visual instruction tuning data for [LLaVA](https://github.com/haotian-liu/LLaVA/tree/main?tab=readme-ov-file#visual-instruction-tuning) first, which we use for attention computation. And we provide the 1K subset for attention analysis in `./playground/data/analysis/llava_v1_5_mix1k.jsonl`.

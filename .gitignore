@@ -1,0 +1,6 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Local evaluation data / outputs
+playground/data/eval/
