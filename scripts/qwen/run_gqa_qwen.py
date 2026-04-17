@@ -2,13 +2,37 @@
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import torch
 from tqdm import tqdm
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+import transformers
+from transformers import AutoProcessor
 from qwen_vl_utils import process_vision_info
+
+try:
+    from transformers import Qwen2_5_VLForConditionalGeneration
+except ImportError as exc:
+    raise ImportError(
+        "Qwen2_5_VLForConditionalGeneration is unavailable in your transformers package. "
+        f"Current transformers version: {transformers.__version__}. "
+        "Please upgrade: python -m pip install \"transformers>=4.49.0\""
+    ) from exc
+
+
+def _ensure_torch_compiler_compat() -> None:
+    # Newer transformers may call torch.compiler.is_compiling(), which is absent on torch 2.1.x.
+    if not hasattr(torch, "compiler"):
+        class _CompilerShim:
+            @staticmethod
+            def is_compiling() -> bool:
+                return False
+        torch.compiler = _CompilerShim()  # type: ignore[attr-defined]
+        return
+    if not hasattr(torch.compiler, "is_compiling"):  # type: ignore[attr-defined]
+        torch.compiler.is_compiling = lambda: False  # type: ignore[attr-defined]
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,6 +50,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dvts-ratio", type=float, default=0.75, help="Fraction of retained tokens allocated to DVTS")
     parser.add_argument("--tgvc-iter", type=int, default=1, help="TGVC refinement iterations")
     parser.add_argument("--use-mps", action="store_true", help="Force use MPS if available")
+    parser.add_argument("--max-pixels", type=int, default=0, help="Limit visual pixels for Qwen processor (0 = default)")
+    parser.add_argument("--min-pixels", type=int, default=0, help="Lower bound for visual pixels (0 = default)")
+    parser.add_argument(
+        "--clear-cuda-cache-every",
+        type=int,
+        default=0,
+        help="Call torch.cuda.empty_cache() every N samples (0 = disable)",
+    )
     return parser.parse_args()
 
 
@@ -239,6 +271,41 @@ def _visiontrim_compress(
     return v_final, {"n": n, "k": k, "r": r, "m": m}
 
 
+def _extract_image_embeds(raw_features, device: str, dtype: torch.dtype) -> torch.Tensor:
+    feats = raw_features
+    if hasattr(feats, "pooler_output"):
+        feats = feats.pooler_output
+    elif hasattr(feats, "last_hidden_state"):
+        feats = feats.last_hidden_state
+    elif isinstance(feats, (tuple, list)) and len(feats) > 0:
+        first = feats[0]
+        if hasattr(first, "pooler_output"):
+            feats = first.pooler_output
+        elif hasattr(first, "last_hidden_state"):
+            feats = first.last_hidden_state
+        else:
+            feats = first
+
+    if isinstance(feats, (tuple, list)):
+        tensor_list = [x for x in feats if torch.is_tensor(x)]
+        if not tensor_list:
+            raise TypeError(f"Unsupported image features container: {type(raw_features)}")
+        feats = torch.cat(tensor_list, dim=0)
+
+    if not torch.is_tensor(feats):
+        raise TypeError(f"Unsupported image features type: {type(feats)}")
+
+    if feats.ndim == 3:
+        if feats.size(0) == 1:
+            feats = feats[0]
+        else:
+            feats = feats.reshape(-1, feats.size(-1))
+    elif feats.ndim != 2:
+        raise ValueError(f"Unexpected image features shape: {tuple(feats.shape)}")
+
+    return feats.to(device=device, dtype=dtype)
+
+
 def _prepare_visiontrim_inputs(model, processor, device: str, image_path: str, question: str, retain_ratio: float, dvts_ratio: float, tgvc_iter: int):
     messages = [
         {
@@ -271,8 +338,8 @@ def _prepare_visiontrim_inputs(model, processor, device: str, image_path: str, q
     image_grid_thw = inputs.get("image_grid_thw")
 
     token_embeds = model.get_input_embeddings()(input_ids)  # [1, L, D]
-    image_features = model.get_image_features(pixel_values, image_grid_thw).pooler_output
-    image_embeds = torch.cat(image_features, dim=0).to(token_embeds.device, token_embeds.dtype)  # [Nv, D]
+    image_features = model.get_image_features(pixel_values, image_grid_thw)
+    image_embeds = _extract_image_embeds(image_features, device=token_embeds.device, dtype=token_embeds.dtype)  # [Nv, D]
 
     text_pos, image_pos = _split_text_image_positions(input_ids[0], model.config.image_token_id)
     if image_pos.numel() != image_embeds.size(0):
@@ -396,6 +463,7 @@ def infer_one(
 
 def main() -> None:
     args = parse_args()
+    _ensure_torch_compiler_compat()
 
     questions = load_questions(args.question_file)
     questions = chunk_items(questions, args.chunk_idx, args.num_chunks)
@@ -418,11 +486,23 @@ def main() -> None:
     model.to(device)
     model.eval()
 
-    processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
+    # Avoid repetitive generation warnings when running greedy decoding.
+    if args.temperature <= 0 and hasattr(model, "generation_config"):
+        for key, val in (("do_sample", False), ("temperature", None), ("top_p", None), ("top_k", None)):
+            if hasattr(model.generation_config, key):
+                setattr(model.generation_config, key, val)
 
+    processor_kwargs = {"trust_remote_code": True}
+    if args.max_pixels > 0:
+        processor_kwargs["max_pixels"] = args.max_pixels
+    if args.min_pixels > 0:
+        processor_kwargs["min_pixels"] = args.min_pixels
+    processor = AutoProcessor.from_pretrained(args.model, **processor_kwargs)
+
+    error_count = 0
     with open(args.answers_file, "w", encoding="utf-8") as fout:
         printed_trim_stats = False
-        for item in tqdm(questions, desc="GQA inference"):
+        for sample_idx, item in enumerate(tqdm(questions, desc="GQA inference"), start=1):
             qid = get_question_id(item)
             question = get_question_text(item)
             image_path = resolve_image_path(args.image_folder, item)
@@ -446,6 +526,7 @@ def main() -> None:
             except Exception as exc:
                 answer = f"[ERROR] {exc}"
                 trim_meta = None
+                error_count += 1
 
             out = {
                 "question_id": qid,
@@ -456,8 +537,12 @@ def main() -> None:
             if trim_meta is not None:
                 out["visiontrim"] = trim_meta
             fout.write(json.dumps(out, ensure_ascii=False) + "\n")
+            if device == "cuda" and args.clear_cuda_cache_every > 0 and sample_idx % args.clear_cuda_cache_every == 0:
+                torch.cuda.empty_cache()
 
     print(f"[Done] Wrote predictions to {args.answers_file}")
+    if error_count > 0:
+        raise RuntimeError(f"Inference finished with {error_count}/{len(questions)} errors. Output is invalid for evaluation.")
 
 
 if __name__ == "__main__":
