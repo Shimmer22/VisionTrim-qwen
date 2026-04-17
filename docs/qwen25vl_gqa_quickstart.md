@@ -12,6 +12,18 @@ This creates:
 - 10k subset questions: `./playground/data/eval/gqa/subset_10000/llava_gqa_testdev_balanced_10000.jsonl`
 - 10k subset images: `./playground/data/eval/gqa/subset_10000/images`
 
+Optional: download official GQA eval assets (`eval.py`) for scoring against ground truth:
+
+```bash
+bash scripts/qwen/download_gqa_eval_assets.sh
+```
+
+Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/qwen/download_gqa_eval_assets.ps1
+```
+
 ## 1) Activate env
 
 ```bash

@@ -89,6 +89,23 @@ bash scripts/v1_qwen/eval/gqa_qwen25vl_3b.sh
 
 Detailed instructions: [docs/qwen25vl_gqa_quickstart.md](docs/qwen25vl_gqa_quickstart.md).
 
+### Reproduced Results (2026-04-17, Qwen2.5-VL-3B, GQA testdev-balanced 10k subset)
+
+Ground-truth file: `playground/data/eval/gqa/raw/testdev_balanced_questions.json` (12578 total questions).  
+Predictions were generated on the 10k subset (`llava_gqa_testdev_balanced_10000.jsonl`).
+
+| Method | Covered Samples | Accuracy on Covered | Correct |
+| --- | ---: | ---: | ---: |
+| Vanilla | 10000 / 12578 (79.50%) | 60.40% | 6040 |
+| VisionTrim (`retain_ratio=0.33`) | 10000 / 12578 (79.50%) | 57.01% | 5701 |
+
+Delta on the same 10k subset: VisionTrim vs Vanilla = **-3.39** points.
+
+Result artifacts:
+- `playground/data/eval/gqa/answers/qwen2_5_vl_3b/accuracy_vanilla_10k_vs_testdev_balanced.json`
+- `playground/data/eval/gqa/answers/qwen2_5_vl_3b/accuracy_visiontrim_10k_vs_testdev_balanced.json`
+- `playground/data/eval/gqa/answers/qwen2_5_vl_3b/comparison_with_gqa_gold_and_paper_llava.md`
+
 ## 🔬 Analysis
 
 To analyze the inaccurate text-visual attention in VLMs, you need to download the visual instruction tuning data for [LLaVA](https://github.com/haotian-liu/LLaVA/tree/main?tab=readme-ov-file#visual-instruction-tuning) first, which we use for attention computation. And we provide the 1K subset for attention analysis in `./playground/data/analysis/llava_v1_5_mix1k.jsonl`.

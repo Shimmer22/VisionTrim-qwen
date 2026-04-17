@@ -4,3 +4,5 @@ __pycache__/
 
 # Local evaluation data / outputs
 playground/data/eval/
+playground/data/gqa/
+visiontrim.egg-info/
