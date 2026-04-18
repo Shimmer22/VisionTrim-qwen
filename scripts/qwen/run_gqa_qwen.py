@@ -149,11 +149,12 @@ def _local_affinity_scores(image_embeds: torch.Tensor, window: int = 2) -> torch
     scores = torch.softmax(scores, dim=0)
     return scores
 
-
+# 采取方差来判断全局和局部重要性哪个更可靠，从而自适应地融合两者的排序分数，得到最终的token重要性排序。
 def _variance_adaptive_fusion(global_scores: torch.Tensor, local_scores: torch.Tensor) -> torch.Tensor:
     var_g = torch.var(global_scores, unbiased=False)
     var_l = torch.var(local_scores, unbiased=False)
-    alpha = var_l / (var_g + var_l + 1e-8)
+    alpha = var_l / (var_g + var_l + 1e-8) 
+    # alpha大，说明local scores更分散，应该更信任global scores；
     return alpha * global_scores + (1.0 - alpha) * local_scores
 
 
@@ -163,42 +164,72 @@ def _tgvc_merge(
     r_tokens: int,
     iters: int = 1,
 ) -> torch.Tensor:
+    # 输入:
+    # remain_embeds: 经过DVTS后剩余的视觉token, 形状 [Nr, D]
+    # text_embeds: 文本token embedding, 形状 [Lt, D]
+    # r_tokens: 目标压缩后要得到的TGVC token数量
+    # iters: 细化迭代次数
+    # 输出:
+    # centers: 压缩后的视觉token, 形状 [r_tokens, D]
     if r_tokens <= 0 or remain_embeds.size(0) == 0:
+        # 没有可压缩token或目标数量非法时, 返回空张量
         return remain_embeds.new_zeros((0, remain_embeds.size(-1)))
 
+    # 目标数量不能超过当前剩余token数量
     r_tokens = min(r_tokens, remain_embeds.size(0))
+    # 归一化文本特征, 后续点积可视作余弦相似度
     text_norm = torch.nn.functional.normalize(text_embeds, dim=-1)
     remain = remain_embeds
 
-    # Center selection via text-to-vision relevance.
+    # 第1步: 选择初始中心（Center selection）
+    # 依据文本到视觉的相关性, 选出最相关的r_tokens个视觉token作为初始中心
     remain_norm = torch.nn.functional.normalize(remain, dim=-1)
+    # t2v: 每个文本token对每个视觉token的相关性分布 [Lt, Nr]
     t2v = torch.softmax(torch.matmul(text_norm, remain_norm.T), dim=-1)
+    # 对所有文本token求平均, 得到每个视觉token的综合分数 [Nr]
     token_score = t2v.mean(dim=0)
+    # 取分数最高的r_tokens个视觉token作为初始中心
     center_idx = torch.topk(token_score, k=r_tokens).indices
     centers = remain[center_idx]
 
+    # 第2步: 迭代细化中心（Refinement）
+    # 思路: 先把每个视觉token分配给最匹配的中心, 再做加权聚合更新中心
     for _ in range(max(1, iters)):
         if remain.size(0) <= r_tokens:
+            # token数量已不大于目标数量, 无需继续压缩
             break
+        # 归一化中心, 便于与文本做相似度计算
         center_norm = torch.nn.functional.normalize(centers, dim=-1)
+        # v2t: 每个视觉token对文本的相关性分布 [Nr, Lt]
         v2t = torch.softmax(torch.matmul(remain_norm, text_norm.T), dim=-1)  # [Nr, Lt]
+        # c2t: 每个中心对文本的相关性分布 [R, Lt]
         c2t = torch.softmax(torch.matmul(center_norm, text_norm.T), dim=-1)  # [R, Lt]
+        # assign_score[i, j]: 第i个视觉token与第j个中心在“文本语义分布”上的匹配度
         assign_score = torch.matmul(v2t, c2t.T)  # [Nr, R]
+        # 每个视觉token分配到匹配度最高的中心
         assign = torch.argmax(assign_score, dim=-1)
 
         merged = []
         for j in range(r_tokens):
+            # 找到分配给第j个中心的所有视觉token下标
             idx = (assign == j).nonzero(as_tuple=False).flatten()
             if idx.numel() == 0:
+                # 若该中心没有分配到token, 保持原中心不变
                 merged.append(centers[j])
                 continue
+            # 仅使用该簇内token对中心j的匹配度做归一化权重
             weights = assign_score[idx, j]
             weights = weights / (weights.sum() + 1e-8)
+            # 对簇内token做加权聚合, 得到该簇的残差信息
             agg = (remain[idx] * weights.unsqueeze(-1)).sum(dim=0)
+            # 更新中心: 原中心 + 聚合残差
             merged.append(centers[j] + agg)
+        # 堆叠为新的中心集合 [R, D]
         centers = torch.stack(merged, dim=0)
+        # remain固定不变, 这里只需要更新其归一化结果供下一轮使用
         remain_norm = torch.nn.functional.normalize(remain, dim=-1)
 
+    # 返回压缩后的TGVC token
     return centers
 
 
@@ -220,8 +251,12 @@ def _visiontrim_compress(
     r = m - k
 
     # DVTS proxy:
+    # 首先做DVTS的token选择，选出k个token作为dominant tokens，剩余的作为TGVC的输入。
+    # 对token对embedding求范数：以此作为重要性排序（全局）
     global_scores = torch.softmax(torch.norm(image_embeds, dim=-1), dim=0)
+    # 局部重要性取决于与邻近token的相似度：以此作为重要性排序（局部）
     local_scores = _local_affinity_scores(image_embeds)
+    # 全局和局部重要性自适应融合，得到最终的token重要性排序。
     fused = _variance_adaptive_fusion(global_scores, local_scores)
     topk_idx = torch.topk(fused, k=k).indices
     v_dom = image_embeds[topk_idx]
@@ -234,11 +269,12 @@ def _visiontrim_compress(
     remain = image_embeds[keep_mask]
 
     # TGVC proxy:
+    # 对于剩下的视觉token，基于文本-视觉相关性进行聚类合并，得到r个TGVC tokens。
     v_com = _tgvc_merge(remain, text_embeds, r_tokens=r, iters=tgvc_iter)
     v_final = torch.cat([v_dom, v_com], dim=0)
     return v_final, {"n": n, "k": k, "r": r, "m": m}
 
-
+# prepare to compact vision tokens with DVTS and TGVC before feeding into the model for generation.
 def _prepare_visiontrim_inputs(model, processor, device: str, image_path: str, question: str, retain_ratio: float, dvts_ratio: float, tgvc_iter: int):
     messages = [
         {
@@ -271,7 +307,9 @@ def _prepare_visiontrim_inputs(model, processor, device: str, image_path: str, q
     image_grid_thw = inputs.get("image_grid_thw")
 
     token_embeds = model.get_input_embeddings()(input_ids)  # [1, L, D]
-    image_features = model.get_image_features(pixel_values, image_grid_thw).pooler_output
+    # 获得：经过视觉编码器，完成了patchmerger之后的特征（即将和文本拼接）
+    image_features = model.get_image_features(pixel_values, image_grid_thw).pooler_output # get image features
+    # 将多段段图片特征拼接成一个整体
     image_embeds = torch.cat(image_features, dim=0).to(token_embeds.device, token_embeds.dtype)  # [Nv, D]
 
     text_pos, image_pos = _split_text_image_positions(input_ids[0], model.config.image_token_id)
@@ -367,6 +405,7 @@ def infer_one(
             generated_ids = model.generate(**inputs, **generate_kwargs)
             prompt_len = inputs["input_ids"].shape[1]
         else:
+            # here comes to the visiontrim path with dynamic token selection and TGVC compression.
             new_input_ids, new_inputs_embeds, new_attention_mask, trim_meta = _prepare_visiontrim_inputs(
                 model=model.model,
                 processor=processor,
