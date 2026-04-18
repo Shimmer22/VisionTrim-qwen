@@ -11,7 +11,8 @@ param(
     [int]$NumSamples = 64,
     [int]$MaxPixels = 0,
     [int]$MinPixels = 0,
-    [int]$ClearCudaCacheEvery = 0
+    [int]$ClearCudaCacheEvery = 0,
+    [string]$RunTag = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,11 +22,15 @@ if (!(Test-Path $ImageFolder)) { throw "Image folder not found: $ImageFolder" }
 
 New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
 
+if ([string]::IsNullOrWhiteSpace($RunTag)) {
+    $RunTag = Get-Date -Format "yyyyMMdd_HHmmss"
+}
+
 $smokeQuestionFile = Join-Path (Split-Path $QuestionFile -Parent) ("llava_gqa_testdev_balanced_smoke_{0}.jsonl" -f $NumSamples)
 python -c "from pathlib import Path; import itertools; src=Path(r'$QuestionFile'); dst=Path(r'$smokeQuestionFile'); dst.parent.mkdir(parents=True, exist_ok=True); lines=list(itertools.islice(src.open('r',encoding='utf-8'), $NumSamples)); dst.open('w',encoding='utf-8').writelines(lines)"
 
-$rawPred = Join-Path $OutRoot ("llava_gqa_testdev_balanced_{0}_smoke_{1}_raw.jsonl" -f $Method, $NumSamples)
-$finalPred = Join-Path $OutRoot ("testdev_balanced_{0}_smoke_{1}_predictions.json" -f $Method, $NumSamples)
+$rawPred = Join-Path $OutRoot ("llava_gqa_testdev_balanced_{0}_smoke_{1}_{2}_raw.jsonl" -f $Method, $NumSamples, $RunTag)
+$finalPred = Join-Path $OutRoot ("testdev_balanced_{0}_smoke_{1}_{2}_predictions.json" -f $Method, $NumSamples, $RunTag)
 
 python scripts/qwen/run_gqa_qwen.py `
     --model $Model `
@@ -49,3 +54,4 @@ python scripts/convert_gqa_for_eval.py --src $rawPred --dst $finalPred
 if ($LASTEXITCODE -ne 0) { throw "convert_gqa_for_eval.py failed with exit code $LASTEXITCODE" }
 
 Write-Host "[Done] Smoke converted predictions: $finalPred"
+Write-Host "[RunTag] $RunTag"

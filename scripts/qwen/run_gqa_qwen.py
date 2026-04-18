@@ -247,16 +247,21 @@ def _visiontrim_compress(
 
     m = max(1, int(round(n * retain_ratio)))
     m = min(m, n)
-    k = max(1, int(round(m * dvts_ratio)))
-    k = min(k, m)
+    # Allow dvts_ratio=0 to disable DVTS and route all retained tokens to TGVC.
+    k = int(round(m * dvts_ratio))
+    k = max(0, min(k, m))
     r = m - k
 
     # DVTS proxy:
-    global_scores = torch.softmax(torch.norm(image_embeds, dim=-1), dim=0)
-    local_scores = _local_affinity_scores(image_embeds)
-    fused = _variance_adaptive_fusion(global_scores, local_scores)
-    topk_idx = torch.topk(fused, k=k).indices
-    v_dom = image_embeds[topk_idx]
+    if k > 0:
+        global_scores = torch.softmax(torch.norm(image_embeds, dim=-1), dim=0)
+        local_scores = _local_affinity_scores(image_embeds)
+        fused = _variance_adaptive_fusion(global_scores, local_scores)
+        topk_idx = torch.topk(fused, k=k).indices
+        v_dom = image_embeds[topk_idx]
+    else:
+        topk_idx = torch.empty((0,), dtype=torch.long, device=image_embeds.device)
+        v_dom = image_embeds.new_zeros((0, image_embeds.size(-1)))
 
     if r <= 0:
         return v_dom, {"n": n, "k": k, "r": 0, "m": m}

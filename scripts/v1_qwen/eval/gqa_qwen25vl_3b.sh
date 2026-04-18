@@ -13,8 +13,9 @@ TGVC_ITER="${TGVC_ITER:-1}"
 QUESTION_FILE="${QUESTION_FILE:-./playground/data/eval/gqa/llava_gqa_testdev_balanced.jsonl}"
 IMAGE_FOLDER="${IMAGE_FOLDER:-./playground/data/eval/gqa/data/images}"
 OUT_ROOT="${OUT_ROOT:-./playground/data/eval/gqa/answers/qwen2_5_vl_3b}"
-RAW_PRED="${OUT_ROOT}/llava_gqa_testdev_balanced_${METHOD}_raw.jsonl"
-FINAL_PRED="${OUT_ROOT}/testdev_balanced_${METHOD}_predictions.json"
+RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
+RAW_PRED="${OUT_ROOT}/llava_gqa_testdev_balanced_${METHOD}_${RUN_TAG}_raw.jsonl"
+FINAL_PRED="${OUT_ROOT}/testdev_balanced_${METHOD}_${RUN_TAG}_predictions.json"
 
 mkdir -p "${OUT_ROOT}"
 
@@ -36,4 +37,5 @@ python scripts/qwen/run_gqa_qwen.py \
 python scripts/convert_gqa_for_eval.py --src "${RAW_PRED}" --dst "${FINAL_PRED}"
 
 echo "[Done] Converted predictions: ${FINAL_PRED}"
+echo "[RunTag] ${RUN_TAG}"
 echo "[Hint] Use your local GQA eval command with: ${FINAL_PRED}"

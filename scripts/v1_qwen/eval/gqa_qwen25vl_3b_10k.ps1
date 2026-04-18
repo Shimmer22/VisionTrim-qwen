@@ -10,7 +10,8 @@ param(
     [string]$OutRoot = "./playground/data/eval/gqa/answers/qwen2_5_vl_3b",
     [int]$MaxPixels = 0,
     [int]$MinPixels = 0,
-    [int]$ClearCudaCacheEvery = 0
+    [int]$ClearCudaCacheEvery = 0,
+    [string]$RunTag = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,8 +21,12 @@ if (!(Test-Path $ImageFolder)) { throw "Image folder not found: $ImageFolder" }
 
 New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
 
-$rawPred = Join-Path $OutRoot ("llava_gqa_testdev_balanced_{0}_raw.jsonl" -f $Method)
-$finalPred = Join-Path $OutRoot ("testdev_balanced_{0}_predictions.json" -f $Method)
+if ([string]::IsNullOrWhiteSpace($RunTag)) {
+    $RunTag = Get-Date -Format "yyyyMMdd_HHmmss"
+}
+
+$rawPred = Join-Path $OutRoot ("llava_gqa_testdev_balanced_{0}_{1}_raw.jsonl" -f $Method, $RunTag)
+$finalPred = Join-Path $OutRoot ("testdev_balanced_{0}_{1}_predictions.json" -f $Method, $RunTag)
 
 python scripts/qwen/run_gqa_qwen.py `
     --model $Model `
@@ -45,3 +50,4 @@ python scripts/convert_gqa_for_eval.py --src $rawPred --dst $finalPred
 if ($LASTEXITCODE -ne 0) { throw "convert_gqa_for_eval.py failed with exit code $LASTEXITCODE" }
 
 Write-Host "[Done] Converted predictions: $finalPred"
+Write-Host "[RunTag] $RunTag"
