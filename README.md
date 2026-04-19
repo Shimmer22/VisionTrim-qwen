@@ -123,6 +123,27 @@ Delta on the same 10k subset: VisionTrim vs Vanilla = **-17.67** points.
 
 Note: the Qwen eval entry scripts now append a timestamp to output filenames by default to avoid overwriting previous runs.
 
+### Reproduced Results (2026-04-19, Qwen2.5-VL-3B, GQA testdev-balanced 10k subset, TGVC-only at aggressive ratio)
+
+Setting:
+- `Method=visiontrim`
+- `retain_ratio=0.0278` (approx. 97.2% visual-token reduction)
+- `dvts_ratio=0` (no coarse DVTS selection, all retained tokens routed to TGVC)
+- `tgvc_iter=1`
+
+| Method | Covered Samples | Accuracy on Covered | Correct |
+| --- | ---: | ---: | ---: |
+| Vanilla | 10000 / 12578 (79.50%) | 60.40% | 6040 |
+| VisionTrim (TGVC-only, aggressive) | 10000 / 12578 (79.50%) | 44.56% | 4456 |
+
+Delta on the same 10k subset: VisionTrim vs Vanilla = **-15.84** points.  
+Compared with the previous aggressive run (`dvts_ratio=0.75`, 42.73%), TGVC-only improves by **+1.83** points.
+
+Result artifacts:
+- `playground/data/eval/gqa/answers/qwen2_5_vl_3b/accuracy_visiontrim_20260418_153706_vs_testdev_balanced.json`
+- `playground/data/eval/gqa/answers/qwen2_5_vl_3b/comparison_vanilla_vs_visiontrim_20260418_153706.md`
+- `playground/data/eval/gqa/answers/qwen2_5_vl_3b/comparison_vanilla_vs_visiontrim_20260418_153706.json`
+
 ## 🔬 Analysis
 
 To analyze the inaccurate text-visual attention in VLMs, you need to download the visual instruction tuning data for [LLaVA](https://github.com/haotian-liu/LLaVA/tree/main?tab=readme-ov-file#visual-instruction-tuning) first, which we use for attention computation. And we provide the 1K subset for attention analysis in `./playground/data/analysis/llava_v1_5_mix1k.jsonl`.
